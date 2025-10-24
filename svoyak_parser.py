@@ -30,15 +30,49 @@ def clean_theme_name(line):
 
 
 def is_question_line(line):
-    m = re.match(r'^(\d+)[\.\s]', line.strip())
-    if not m:
+    """
+    Распознаёт строку, начинающую вопрос:
+    - "10. ..."     (обычный)
+    - "10 ..."      (иногда)
+    - "Вопрос 10:"  / "Вопрос: 10" / "Вопрос за 10" / "Вопрос №10"
+    Возвращает True только если найдено число-стоимость, кратное 10 в разумном диапазоне.
+    """
+    if not line:
         return False
-    price = int(m.group(1))
-    return price % 10 == 0 and 10 <= price <= 10000
+    s = line.strip()
+    # 1) стандартный случай: число в начале: "10." или "10 "
+    m = re.match(r'^\s*(\d+)[\.\)\s]', s)
+    if m:
+        try:
+            price = int(m.group(1))
+        except:
+            return False
+        return price % 10 == 0 and 10 <= price <= 10000
+
+    # 2) варианты с словом "Вопрос" (включая "Вопрос за", "Вопрос №", "Вопрос:")
+    m2 = re.match(r'^\s*вопрос\b(?:\s+за)?[\s\:\-\—\–]*#?\s*(\d+)', s, re.IGNORECASE)
+    if m2:
+        try:
+            price = int(m2.group(1))
+        except:
+            return False
+        return price % 10 == 0 and 10 <= price <= 10000
+
+    # 3) общая запасная эвристика: "Вопрос ... N" (если есть)
+    m3 = re.match(r'^\s*вопрос[^\d]*(\d+)', s, re.IGNORECASE)
+    if m3:
+        try:
+            price = int(m3.group(1))
+        except:
+            return False
+        return price % 10 == 0 and 10 <= price <= 10000
+
+    return False
 
 
 def is_service_line(line):
-    return any(word in line for word in ['Источник', 'Комментарий', 'Зачет', 'Незачет', 'http'])
+    L = line.lower()
+    return any(k in L for k in ['источник', 'комментарий', 'зачет', 'незачет', 'http'])
 
 
 def is_probably_question(line):
@@ -60,7 +94,7 @@ def has_answer_nearby(lines, idx, search_limit=10):
     pattern = re.compile(r'(?:^|\s)Ответ\s*[:\-–]', re.IGNORECASE)
     for i in range(idx, min(len(lines), idx + 1 + search_limit)):
         line = lines[i].strip()
-        if i > idx and re.match(r'^\s*\d+[\.\s]', line):
+        if i > idx and is_question_line(lines[i]):
             return False
         if pattern.search(line):
             return True
@@ -85,7 +119,7 @@ def extract_answer_block(lines, start_idx, end_idx):
     q_lines = [lines[j] for j in range(start_idx, answer_idx)]
     a_lines = [lines[answer_idx]]
     i = answer_idx + 1
-    while i < end_idx and not re.match(r'^\s*\d+[\.\s]', lines[i]):
+    while i < end_idx and not is_question_line(lines[i]):
         if lines[i].strip() == '':
             break
         a_lines.append(lines[i])
@@ -110,7 +144,12 @@ def extract_questions(theme_lines):
     i = 0
     while i < len(theme_lines):
         if is_question_line(theme_lines[i]):
-            m = re.match(r'^\s*(\d+)[\.\s]', theme_lines[i])
+            # Попробуем извлечь число несколькими способами
+            m = re.match(r'^\s*(\d+)[\.\)\s]', theme_lines[i])
+            if not m:
+                m = re.match(r'^\s*вопрос\b(?:\s+за)?[\s\:\-\—\–]*#?\s*(\d+)', theme_lines[i], re.IGNORECASE)
+            if not m:
+                m = re.match(r'^\s*вопрос[^\d]*(\d+)', theme_lines[i], re.IGNORECASE)
             if not m:
                 i += 1
                 continue
@@ -145,6 +184,7 @@ def extract_theme_candidates(lines):
     # сколько непустых строк вверх от первого вопроса возьмём в кандидаты заголовка
     BACK_CANDIDATES = 40
 
+    end_idx = -1
     while i < len(lines):
         block = []
         j = i
@@ -153,9 +193,13 @@ def extract_theme_candidates(lines):
         while j < len(lines) and scanned < FORWARD_SCAN_LIMIT:
             if is_question_line(lines[j]) and has_answer_nearby(lines, j):
                 m = re.match(r'^\s*(\d+)', lines[j])
+                if not m:
+                    m = re.match(r'^\s*вопрос\b(?:\s+за)?[\s\:\-\—\–]*#?\s*(\d+)', lines[j], re.IGNORECASE)
+                if not m:
+                    m = re.match(r'^\s*вопрос[^\d]*(\d+)', lines[j], re.IGNORECASE)
                 if m:
                     block.append({'line': j, 'price': int(m.group(1))})
-            # если достаточно вопросов — можно остановиться раннее
+            # если достаточно вопросов — можно остановиться ранее
             if len(block) >= 5:
                 break
             j += 1
@@ -175,111 +219,112 @@ def extract_theme_candidates(lines):
             title_text = None
             theme_comment = ""
 
+            # --- НОВАЯ, надёжная логика выбора названия темы и комментария ---
+            # 1) двигаемся вверх от первого вопроса, пропуская подряд пустые строки и строки 'Форма:' прямо перед вопросом
             pos = first_q_line - 1
-            # накопитель для фрагментов комментария, которые ближе к вопросам
-            tail_comments = []
+            while pos >= end_idx and (lines[pos].strip() == "" or lines[pos].strip().lower().startswith('форма:')):
+                pos -= 1
 
-            while pos >= 0:
-                ln = lines[pos].rstrip('\n')
-                stripped = ln.strip()
+            # 2) соберём подряд идущие (соседние) непустые строки вверх — это блок (сверху->вниз после reverse)
+            block_start = pos
+            block_lines = []
+            while block_start >= max(0, end_idx) and lines[block_start].strip() != "":
+                block_lines.append(lines[block_start].rstrip('\n'))
+                block_start -= 1
+            block_lines.reverse()
+            # теперь block_start указывает на строку выше блока (пустая или -1)
 
-                # пропускаем пустые строки
-                if stripped == "":
-                    pos -= 1
-                    continue
+            title_idx = None
+            title_text = None
+            theme_comment = ""
 
-                # пропускаем строки "Форма:" — они относятся к вопросу, а не к теме
-                if stripped.lower().startswith('форма:'):
-                    pos -= 1
-                    continue
+            def _block_text(bl):
+                return "\n".join([ln.strip() for ln in bl]).strip()
 
-                # если это parenthetical блок (скобки) или явный "Комментарий:", соберём его как часть comment
-                # и НИКОГДА не включаем в комментарий строку с названием темы выше.
-                if (stripped.startswith('(') and stripped.endswith(')')) or stripped.lower().startswith('комментарий:'):
-                    # 1) Случай: однострочные скобки "(...)" — возьмём только эту строку как комментарий
-                    if stripped.startswith('(') and stripped.endswith(')'):
-                        paren_block = [lines[pos].rstrip('\n')]
-                        pos -= 1
-                        tail_comments = paren_block + tail_comments
-                        continue
+            if block_lines:
+                block_text = _block_text(block_lines)
+                first_line = block_lines[0].strip()
 
-                    # 2) Случай: конец многострочного скобочного блока (строка может заканчиваться ')')
-                    if stripped.endswith(')'):
-                        paren_block = [lines[pos].rstrip('\n')]
-                        pos -= 1
-                        # поднимаемся вверх, собирая только те строки, которые являются частью скобочного блока
-                        # (останавливаемся, если встречаем строку, начинающуюся с "(", или видим пустую строку,
-                        # или наткнулись на "Форма:" / заголовок темы / номер вопроса)
-                        while pos >= 0:
-                            up = lines[pos].strip()
-                            if up == "" or up.lower().startswith('форма:') or re.match(r'^\s*Тема\b', up, re.IGNORECASE) or re.match(r'^\s*\d+[\.\)]', up):
-                                break
-                            paren_block.append(lines[pos].rstrip('\n'))
-                            if up.startswith('('):
-                                pos -= 1
-                                break
-                            pos -= 1
-                        paren_block.reverse()
-                        tail_comments = paren_block + tail_comments
-                        continue
+                # CASE B/C: если блок — комментарий в скобках или начинается со слова "Комментарий:"
+                if (block_text.startswith("(") and block_text.endswith(")")) or first_line.lower().startswith(
+                        'комментарий:'):
+                    theme_comment = block_text
 
-                    # 3) Случай: блок, начинающийся со слова "Комментарий:" — собираем только строки этого блока,
-                    #    но прекратим, если выше идёт явный заголовок/пустая строка/Форма/номер вопроса
-                    if stripped.lower().startswith('комментарий:'):
-                        com_block = [lines[pos].rstrip('\n')]
-                        pos -= 1
-                        while pos >= 0:
-                            up = lines[pos].strip()
-                            if up == "" or up.lower().startswith('форма:') or re.match(r'^\s*Тема\b', up, re.IGNORECASE) or re.match(r'^\s*\d+[\.\)]', up):
-                                break
-                            com_block.append(lines[pos].rstrip('\n'))
-                            pos -= 1
-                        com_block.reverse()
-                        tail_comments = com_block + tail_comments
-                        continue
+                    # если над скобками может быть пустая строка — поднимемся через неё, чтобы найти название темы
+                    prev = block_start
+                    while prev >= max(0, end_idx) and lines[prev].strip() == "":
+                        prev -= 1
 
-                # иначе — найден потенциальный заголовок
-                title_idx = pos
-                title_text = clean_theme_name(stripped) or stripped
+                    title_idx = None
+                    title_text = None
 
-                # соберём строки между этим заголовком и первым вопросом, исключая 'Форма:' и служебные строки
-                add_comments = []
-                cp = pos + 1
-                while cp < first_q_line:
-                    s = lines[cp].strip()
-                    if s == "" or s.lower().startswith('форма:') or is_service_line(s):
-                        cp += 1
-                        continue
-                    add_comments.append(lines[cp].rstrip('\n'))
-                    cp += 1
-
-                # итоговый комментарий — сначала строки ниже заголовка (если они есть), затем tail_comments
-                if add_comments or tail_comments:
-                    theme_comment = "\n".join(add_comments + tail_comments)
+                    # если над блоком есть непустая строка, попробуем её интерпретировать
+                    if prev >= max(0, end_idx):
+                        cand_line = lines[prev].strip()
+                        cand_name = clean_theme_name(cand_line)
+                        if cand_name:
+                            title_idx = prev
+                            title_text = cand_name
+                        else:
+                            # немного поднимемся выше (до BACK_CANDIDATES)
+                            scan_up = prev - 1
+                            scanned = 0
+                            while scan_up >= max(0, end_idx) and scanned < BACK_CANDIDATES:
+                                if lines[scan_up].strip():
+                                    cand2 = lines[scan_up].strip()
+                                    cand2_name = clean_theme_name(cand2)
+                                    if cand2_name:
+                                        title_idx = scan_up
+                                        title_text = cand2_name
+                                        break
+                                scan_up -= 1
+                                scanned += 1
+                            # fallback — хотя бы возьмём строку prev как заголовок
+                            if title_idx is None:
+                                title_idx = prev
+                                title_text = clean_theme_name(lines[prev].strip()) or lines[prev].strip()
+                    else:
+                        # нет непустых строк выше — fallback
+                        title_text = f"Тема {num_theme}"
+                        title_idx = max(0, first_q_line - 1)
                 else:
-                    theme_comment = ""
-
-                break  # мы нашли заголовок — выходим
-
-            # если не нашли ничего — fallback
-            if title_text is None:
-                title_text = f"Тема {num_theme}"
-                title_idx = max(0, first_q_line - 1)
-
-            # комментарий к теме — все непустые строки между title_idx и первым вопросом
-            # (исключаем служебные строки и строки "Форма:")
-            comment_lines = []
-            for ci in range(title_idx + 1, first_q_line):
-                ln = lines[ci].strip()
-                if not ln:
-                    continue
-                # не включаем 'Форма:' в комментарий темы — это форма вопроса, она относится к вопросу
-                if ln.lower().startswith('форма:'):
-                    continue
-                if is_service_line(ln):
-                    continue
-                comment_lines.append(ln)
-            theme_comment = "\n".join(comment_lines) if comment_lines else ""
+                    # CASE A: обычный случай — первая строка блока = заголовок, остальные — комментарий
+                    title_text = clean_theme_name(first_line) or first_line
+                    # индекс первой строки блока — block_start + 1 (потому что loop отнял 1 лишний шаг)
+                    title_idx = block_start + 1
+                    # собираем коммент (остальные строки блока), исключая строки 'Форма:' и служебные метки
+                    if len(block_lines) > 1:
+                        comment_list = []
+                        for ln in block_lines[1:]:
+                            st = ln.strip()
+                            if st.lower().startswith('форма:'):
+                                continue
+                            if is_service_line(st):
+                                # сохраняем авторов и пр. (они не входят в is_service_line), но исключим явные 'Комментарий/Источник/Зачет'
+                                continue
+                            comment_list.append(ln.rstrip('\n'))
+                        if comment_list:
+                            theme_comment = "\n".join(comment_list)
+            else:
+                # Ничего подрядого не нашлось — небольшой lookup вверх (без длинного lookback)
+                SMALL_LOOKUP = 10
+                up = first_q_line - 1
+                steps = 0
+                found = False
+                while up >= max(0, end_idx) and steps < SMALL_LOOKUP:
+                    if lines[up].strip() == "" or lines[up].strip().lower().startswith('форма:'):
+                        up -= 1
+                        steps += 1
+                        continue
+                    cand = clean_theme_name(lines[up].strip())
+                    title_text = cand if cand else lines[up].strip()
+                    title_idx = up
+                    found = True
+                    break
+                if not found:
+                    title_text = f"Тема {num_theme}"
+                    title_idx = max(0, first_q_line - 1)
+            # --- конец новой логики ---
 
             # определяем корректный конец темы: ищем следующий явный заголовок (Тема ...) или
             # числовой заголовок (например "1. Австралия") — тогда останавливаемся прямо перед ним.
@@ -305,19 +350,45 @@ def extract_theme_candidates(lines):
                     end_idx = t2
                     break
                 cleaned_candidate = clean_theme_name(ln_t)
-                if cleaned_candidate and len(ln_t.split()) <= 8:
+                if cleaned_candidate and len(ln_t.split()) <= 12:
                     end_idx = t2
                     break
 
-            themes.append({
-                'num': num_theme,
-                'name': title_text,
-                'start': title_idx,
-                'end': end_idx,
-                'comment': theme_comment
-            })
+            warnings = []
+
+            # Проверка названия
+            if not title_text.strip():
+                warnings.append(f"⚠️ Тема {num_theme}: пустое название")
+            if ":" in title_text:
+                warnings.append(f"⚠️ Тема {num_theme}: содержит ':' в названии")
+            if title_text.lower().startswith("комментарий"):
+                warnings.append(f"⚠️ Тема {num_theme}: начинается со слова 'Комментарий'")
+            if title_text.strip().startswith("(") and title_text.strip().endswith(")"):
+                warnings.append(f"⚠️ Тема {num_theme}: название заключено в скобки")
+            if len(title_text.split()) > 10:
+                warnings.append(f"⚠️ Тема {num_theme}: слишком длинное название ({len(title_text.split())} слов)")
+
+            # Проверка вопросов
+            prices = [b["price"] for b in block if "price" in b]
+            if len(prices) != 5:
+                warnings.append(f"⚠️ Тема {num_theme} '{title_text}': найдено {len(prices)} вопросов (ожидалось 5)")
+
+            expected = [10, 20, 30, 40, 50]
+            if sorted(prices) != expected:
+                warnings.append(f"⚠️ Тема {num_theme} '{title_text}': некорректные стоимости вопросов ({prices})")
+
+            # Сохраняем предупреждения в саму тему
+            theme_entry = {
+                "num": num_theme,
+                "name": title_text.strip(),
+                "comment": theme_comment,
+                "start": title_idx,
+                "end": end_idx,
+                "warnings": warnings
+            }
+            themes.append(theme_entry)
             num_theme += 1
-            i = last_q_line + 1
+            i = end_idx
         else:
             i += 1
 
@@ -372,6 +443,7 @@ def process_theme(lines, theme, theme_num):
 
         norm_price = mapping.get(q['price'], q['price'])
         result.append(f"{norm_price}. {q_text}")
+        result.append("")
 
         if a_text:
             if form_line:
@@ -430,12 +502,24 @@ def split_themes(themes, user_split=None, min_size=9, max_size=12):
 
 
 # === Вывод ===
-def random_prefix(length=4):
+def random_package_name(length=4):
     return ''.join(random.choices(string.ascii_lowercase, k=length))
 
-def save_to_docx(block_texts, prefix=None):
-    prefix = prefix or random_prefix()
+def save_to_docx(block_texts, package_name=None, theme_counts=None):
+    package_name = package_name or random_package_name()
+
+    # Подсчёт номеров тем внутри блоков
+    current_theme = 1
     for i, text in enumerate(block_texts, 1):
+        count = theme_counts[i - 1] if theme_counts and i - 1 < len(theme_counts) else text.count('\n\n10.')
+        first_theme = current_theme
+        last_theme = current_theme + count - 1
+        current_theme += count
+
+        # Формируем имя файла
+        filename = f"{package_name}-{i}-{first_theme}..{last_theme}.docx"
+
+        # Сохраняем файл
         doc = Document()
         for line in text.split('\n'):
             p = doc.add_paragraph(line)
@@ -446,22 +530,53 @@ def save_to_docx(block_texts, prefix=None):
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.space_before = Pt(0)
             p.paragraph_format.line_spacing = 1.0
-        doc.save(f"{prefix}_{i}.docx")
+        doc.save(filename)
+        print(f"✅ Saved {filename}")
 
 
 def main():
-    lines = read_input_file('umlaut-2025.txt')
+    lines = read_input_file('vuelta-autumn-2024.txt')
     themes = extract_theme_candidates(lines)
-    blocks = split_themes(themes, user_split=[10]*8)
+
+    blocks = split_themes(themes, user_split=[9]*2+[10]*5)
     theme_counter = 1
     output_blocks = []
-    for block in blocks:
-        block_texts = []
+
+    for i, block in enumerate(blocks, 1):
+        block_texts = ['\n'.join([theme['name'] for theme in block])]
+        block_warnings = []
+
+        # Собираем текст и предупреждения по темам
         for theme in block:
             block_texts.append(process_theme(lines, theme, theme_counter))
             theme_counter += 1
-        output_blocks.append('\n\n'.join(block_texts))
-    save_to_docx(output_blocks)
+            if "warnings" in theme and theme["warnings"]:
+                block_warnings.extend(theme["warnings"])
+
+        # Сохраняем этот блок в отдельный файл
+        first_theme = block[0]["num"]
+        last_theme = block[-1]["num"]
+        filename = f"Вуэльта.2024.Осень-{i}-{first_theme}..{last_theme}.docx"
+        doc = Document()
+        for line in '\n\n'.join(block_texts).split('\n'):
+            p = doc.add_paragraph(line)
+            run = p.runs[0] if p.runs else p.add_run('')
+            run.font.name = 'Arial'
+            run.font.size = Pt(11)
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.line_spacing = 1.0
+        doc.save(filename)
+
+        # Выводим отчёт
+        if block_warnings:
+            print(f"⚠️ Saved {filename} (предупреждений: {len(block_warnings)})")
+            for w in block_warnings:
+                print("   ", w)
+            return
+        else:
+            print(f"✅ Saved {filename}")
 
 
 if __name__ == '__main__':
