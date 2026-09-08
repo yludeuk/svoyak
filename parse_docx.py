@@ -34,6 +34,8 @@ from cache import (
     compute_prompt_hash,
     make_cache_key,
     load_from_cache,
+    load_cache_entry,
+    load_raw_from_cache,
     save_to_cache,
     CACHE_DIR,
 )
@@ -44,7 +46,11 @@ sys.stdout.reconfigure(encoding="utf-8")
 # Максимальное количество строк в одном запросе к LLM
 MAX_LINES_PER_CHUNK = 1000
 # Перекрытие между блоками (строк)
-CHUNK_OVERLAP = 50
+# Должно быть достаточно большим, чтобы заголовок темы вместе со всеми её
+# вопросами гарантированно попадал в следующий чанк. Иначе LLM может не
+# распознать тему вопросов из зоны перекрытия (theme=null), и такие вопросы
+# не будут удалены дедупликацией (см. deduplicate_questions).
+CHUNK_OVERLAP = 150
 
 # Конфигурация пакетов для обработки
 # Каждый пакет: (имя_пакета, список_путей_к_docx/pdf, разбиение_на_блоки_для_docx)
@@ -89,23 +95,64 @@ PACKAGES = [
     #     "split": [12] * 2 + [10] * 2 + [11, 12],
     # }
 
+    # {
+    #     "name": "Love in December-2020",
+    #     "input_files": [
+    #         "input/LiD - 2020/Групповой этап. Круг 1 (9 тем).docx",
+    #         "input/LiD - 2020/Групповой этап. Круг 2 (9 тем).docx",
+    #         "input/LiD - 2020/Групповой этап. Круг 3 (9 тем).docx",
+    #         "input/LiD - 2020/Групповой этап. Круг 4 (9 тем).docx",
+    #         "input/LiD - 2020/Групповой этап. Круг 5 (9 тем).docx",
+    #         "input/LiD - 2020/Одна восьмая финала (12 тем).docx",
+    #         "input/LiD - 2020/Одна четвертая финала (12 тем).docx",
+    #         "input/LiD - 2020/Полуфинал(12 тем).docx",
+    #         "input/LiD - 2020/Финал (15 тем).docx",
+    #         "input/LiD - 2020/Запас (3 темы).docx"
+    #     ],
+    #     # Разбиение на блоки для финальных docx (заполнить после оценки количества тем)
+    #     "split": [9] + [10] * 9,
+    # }
+
+    # {
+    #     "name": "ЛВТ-2024",
+    #     "input_files": [
+    #         "input/ЛВТ-2024/СВОЯ ИГРА ЛВТ 2024.docx"
+    #     ],
+    #     # Разбиение на блоки для финальных docx (заполнить после оценки количества тем)
+    #     "split": [9] * 5 + [10] * 4,
+    # }
+
+    # {
+    #     "name": "Чарка-2026",
+    #     "input_files": [
+    #         "input/Чарка/Чарка 1, 2026, тур 1.docx",
+    #         "input/Чарка/Чарка 1, 2026, тур 2.docx",
+    #         "input/Чарка/Чарка 1, 2026, тур 3.docx",
+    #         "input/Чарка/Чарка 1, 2026, тур 4.docx",
+    #         "input/Чарка/Чарка 1, 2026, тур 5.docx",
+    #         "input/Чарка/Чарка 1, 2026, тур 6.docx",
+    #         "input/Чарка/Чарка 1, 2026, тур 7.docx",
+    #     ],
+    #     # Разбиение на блоки для финальных docx (заполнить после оценки количества тем)
+    #     "split": [9] + [10] * 4,
+    # }
+
     {
-        "name": "Love in December-2020",
+        "name": "Шкврка-2026",
         "input_files": [
-            "input/LiD - 2020/Групповой этап. Круг 1 (9 тем).docx",
-            "input/LiD - 2020/Групповой этап. Круг 2 (9 тем).docx",
-            "input/LiD - 2020/Групповой этап. Круг 3 (9 тем).docx",
-            "input/LiD - 2020/Групповой этап. Круг 4 (9 тем).docx",
-            "input/LiD - 2020/Групповой этап. Круг 5 (9 тем).docx",
-            "input/LiD - 2020/Одна восьмая финала (12 тем).docx",
-            "input/LiD - 2020/Одна четвертая финала (12 тем).docx",
-            "input/LiD - 2020/Полуфинал(12 тем).docx",
-            "input/LiD - 2020/Финал (15 тем).docx",
-            "input/LiD - 2020/Запас (3 темы).docx"
+            "input/Чарка/Шкварка 1, 2026, этап 1.docx",
+            "input/Чарка/Шкварка 1, 2026, этап 2.docx",
+            "input/Чарка/Шкварка 1, 2026, этап 3.docx",
+            "input/Чарка/Шкварка 1, 2026, этап 4.docx",
+            "input/Чарка/Шкварка 1, 2026, этап 5.docx",
+            "input/Чарка/Шкварка_1,_2026,_этап_6_четвертьфинал.docx",
+            "input/Чарка/Шкварка 1, 2026, этап 7 (полуфинал).docx",
+            "input/Чарка/Шкварка 1, 2026, этап 8 (финал).docx",
+            "input/Чарка/Запас. Чарка и Шкварка 1, 2026.docx",
         ],
         # Разбиение на блоки для финальных docx (заполнить после оценки количества тем)
-        "split": [9] + [10] * 9,
-    }
+        "split": [9]*3 + [10] * 3,
+    }Чарка. Зеркало СЧРБ-2025 (СИ/КСИ/ЭК). Подборка посложнее. Авторы - Карпиевич, Копочель, Кулешов, Макаревич, Руденко,  Шевела. 49 тем.
 ]
 
 SYSTEM_PROMPT = """Ты парсер пакетов "Своя игра".
@@ -173,7 +220,11 @@ SYSTEM_PROMPT = """Ты парсер пакетов "Своя игра".
 1. theme:
 - название темы (без номера и автора в скобках)
 - определяется по позиции вопроса в раунде
-- если определить невозможно — null
+- если вопрос явно продолжает предыдущую тему (например, в тексте видна
+  последовательность цен 10, 20, 30, 40, 50), но название темы в этом
+  фрагменте не видно — НАСЛЕДУЙ название темы из предыдущего вопроса,
+  НЕ ставь null
+- только если тему действительно невозможно определить — null
 
 2. theme_comment:
 - текст комментария к теме (идёт после названия темы, обычно начинается с "Комментарий к теме:" или просто описательный текст перед первым вопросом)
@@ -194,13 +245,14 @@ SYSTEM_PROMPT = """Ты парсер пакетов "Своя игра".
 - сохраняй формулировку как есть
 
 6. form:
-- форма вопроса, указывает на то, что нужно сдать в ответе, чаще всего это местоимение, которое относится к ответу.
-- может быть напрямую указана до или после вопроса, в таком случае её нужно убрать из вопроса и перенести в отдельное поле
-- может быть не указана напрямую, в таком случае нужно попробовать её понять самому:
-    часто форма полностью или частично указана в тексте вопроса капсом -
-      "ОН", "ОНА", "ОНО", "ЕЁ", "ЕГО", "ЭТО", "КТО", "ЧТО", "ЭТОТ ЧЕЛОВЕК", "ЭТОТ ФРАНЦУЗСКИЙ ГОРОД", "ЧТО МЫ ПРОПУСТИЛИ" и другие подобные конструкции;
-    иногда капсом указана только часть формы - "ЭТОТ", "ЭТУ" и другие похожие местоимения. В таком случае нужно попробовать самому дополнить её существительным из текста вопроса;
-    если форма не указана капсом, нужно по смыслу попробовать её достать из текста самому, если задача сложная - оставить null и форму не указывать.
+- форма вопроса — это краткая подсказка, ЧТО ИМЕННО нужно сдать в ответе (чаще всего местоимение или короткая конструкция, относящаяся к ответу).
+- ВАЖНО: НЕ удаляй форму из текста вопроса! Форма (обычно выделена КАПСОМ) остаётся в вопросе на своём месте — это часть формулировки вопроса.
+- в поле form укажи ОДНУ краткую форму, которая помогает понять, что нужно ответить.
+- НЕ перечисляй все вхождения формы через запятую: если в вопросе несколько одинаковых местоимений, относящихся к одному и тому же (например, "ОНИ ... ИХ" — оба про один объект), укажи форму ОДИН раз ("ОНИ").
+- если в вопросе несколько РАЗНЫХ форм, которые вместе образуют вопрос (например, "ОНИ ДЕЛАЮТ ЭТО" — нужно ответить, что именно ОНИ делают), объедини их в одну осмысленную конструкцию ("ОНИ ДЕЛАЮТ ЭТО").
+- если капсом указана только часть формы ("ЭТОТ", "ЭТУ"), дополни её существительным из текста вопроса, чтобы форма стала понятной ("ЭТОТ ГОРОД", "ЭТУ ДОЛЖНОСТЬ").
+- если форма не указана капсом, попробуй по смыслу достать её из текста самому.
+- если форма сложная, неоднозначная или её невозможно кратко сформулировать — поставь null (лучше null, чем запутывающий список).
 
 7. answer:
 - основной ответ
@@ -317,7 +369,9 @@ def call_llm(system_prompt: str, user_text: str, model: str,
             resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            print(f"          Размер полученного текста: {len(content)}")
+            return content
         except (requests.exceptions.Timeout, requests.exceptions.HTTPError) as e:
             last_error = e
             print(f"      [!] Попытка {attempt}/{max_retries} не удалась: {e}")
@@ -328,30 +382,195 @@ def call_llm(system_prompt: str, user_text: str, model: str,
     raise last_error
 
 
+def _save_raw_for_debug(raw: str, prefix: str = "llm_raw") -> str:
+    """Сохраняет сырой ответ LLM в файл для отладки. Возвращает путь к файлу."""
+    import datetime
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = f"{prefix}_{ts}.txt"
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw)
+        return path
+    except Exception as e:
+        print(f"          [!] Не удалось сохранить сырой ответ: {e}")
+        return ""
+
+
+def _find_matching_bracket(text: str, start: int, open_ch: str, close_ch: str) -> int:
+    """Ищет соответствующую закрывающую скобку с учётом вложенности и строк.
+
+    Возвращает индекс закрывающей скобки или -1, если не найдена.
+    Корректно обрабатывает строки в кавычках и экранированные символы.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _repair_unescaped_quotes(text: str) -> str:
+    """Чинит неэкранированные кавычки внутри JSON-строк.
+
+    LLM иногда возвращает JSON, где внутри строкового значения встречается
+    обычная кавычка " (например, «...нашел!"."»), что делает JSON невалидным.
+    Эта функция проходит по тексту, отслеживая состояние "внутри строки",
+    и экранирует кавычки, которые стоят НЕ на границе строки (т.е. после них
+    не идёт , ] } : или пробел/конец — признак конца значения).
+
+    Возвращает исправленный текст. Если ничего не изменилось — исходный текст.
+    """
+    out = []
+    in_string = False
+    escape = False
+    changed = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escape:
+            out.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escape = True
+            i += 1
+            continue
+        if ch == '"':
+            if in_string:
+                # Смотрим, что идёт после кавычки
+                nxt = text[i + 1] if i + 1 < n else ""
+                # Если после кавычки идёт структурный символ — это конец строки
+                if nxt in (",", "]", "}", ":", "\n", "\r", " ", "\t") or nxt == "":
+                    in_string = False
+                    out.append(ch)
+                else:
+                    # Кавычка внутри строки — экранируем
+                    out.append("\\\"")
+                    changed = True
+            else:
+                in_string = True
+                out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    if changed:
+        return "".join(out)
+    return text
+
+
 def extract_json(raw: str):
+    """Извлекает JSON-массив или объект из ответа модели.
+
+    Устойчив к:
+    - пустому ответу
+    - markdown-обёрткам ```json ... ```
+    - пояснительному тексту до/после JSON
+    - обрезанному JSON (если найдено начало, но нет конца)
+    - неэкранированным кавычкам внутри строк (чинит их)
+
+    ВАЖНО: при поиске границ JSON учитывает вложенность скобок и строки,
+    чтобы не спутать [ и ] внутри текста вопросов с границами массива.
+    """
+    if raw is None:
+        raise json.JSONDecodeError("Пустой ответ от LLM (None)", "", 0)
+
     cleaned = raw.strip()
+    if not cleaned:
+        raise json.JSONDecodeError("Пустой ответ от LLM", "", 0)
+
+    # Убираем markdown-обёртку ```json ... ``` или ``` ... ```
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        lines = [ln for ln in lines if not ln.strip().startswith("```")]
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
+
+    # Попытка 1: парсим как есть
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
-    start = None
-    end = None
-    for i, ch in enumerate(cleaned):
-        if ch in "[{" and start is None:
-            start = i
-        if ch in "]}":
-            end = i
-    if start is not None and end is not None and end > start:
+
+    # Попытка 2: чиним неэкранированные кавычки и пробуем снова
+    repaired = _repair_unescaped_quotes(cleaned)
+    if repaired != cleaned:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+    # Попытка 3: ищем JSON-массив с правильным учётом скобок и строк
+    # Сначала ищем все позиции [ (приоритет массиву)
+    array_starts = [i for i, ch in enumerate(cleaned) if ch == "["]
+    # Затем позиции { (для одиночного объекта)
+    object_starts = [i for i, ch in enumerate(cleaned) if ch == "{"]
+
+    # Пробуем массивы от самых ВНЕШНИХ к внутренним.
+    # ВАЖНО: если ответ начинается с "[" (это и есть основной массив вопросов),
+    # пробуем его ПЕРВЫМ. Иначе при повреждённом JSON (например, неэкранированная
+    # кавычка внутри строки) мы можем случайно распарсить внутренний массив
+    # (например, sources: ["..."]), вернув список строк вместо вопросов.
+    # Сортируем стартовые позиции: сначала те, что ближе к началу текста,
+    # но при этом отдаём приоритет самому первому "[" (внешнему массиву).
+    array_starts_sorted = sorted(
+        array_starts,
+        key=lambda i: (i != array_starts[0] if array_starts else False, i),
+    )
+    for start in array_starts_sorted:
+        end = _find_matching_bracket(cleaned, start, "[", "]")
+        if end == -1:
+            continue
         candidate = cleaned[start : end + 1]
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
-            pass
-    raise json.JSONDecodeError("Не удалось извлечь JSON", cleaned, 0)
+            continue
+
+    # Пробуем объекты от самых ранних к поздним
+    for start in object_starts:
+        end = _find_matching_bracket(cleaned, start, "{", "}")
+        if end == -1:
+            continue
+        candidate = cleaned[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    # Сохраняем сырой ответ для отладки
+    debug_path = _save_raw_for_debug(raw)
+    preview = cleaned[:300].replace("\n", " ")
+    msg = (
+        f"Не удалось извлечь JSON. Длина ответа: {len(cleaned)}. "
+        f"Начало: {preview!r}"
+    )
+    if debug_path:
+        msg += f". Сырой ответ сохранён в {debug_path}"
+    raise json.JSONDecodeError(msg, cleaned, 0)
 
 
 def make_chunks(lines: list, max_lines: int, overlap: int) -> list:
@@ -374,23 +593,148 @@ def make_chunks(lines: list, max_lines: int, overlap: int) -> list:
     return chunks
 
 
-def question_signature(q: dict) -> str:
-    """Создаёт сигнатуру вопроса для дедупликации."""
-    theme = q.get("theme") or ""
-    price = q.get("price")
-    question = (q.get("question") or "").strip()[:100]
-    return f"{theme}|{price}|{question}"
+def _normalize_text(s) -> str:
+    """Нормализует текст для нечёткого сравнения.
+
+    - приводит к строке
+    - lowercase
+    - заменяет ё на е
+    - убирает знаки препинания
+    - схлопывает пробелы
+    - убирает слова-заглушки (ЭТОТ/ЭТОГО/ОН/ОНА/ОНИ/ЕГО/ЕЁ и т.п.),
+      которые LLM по-разному подставляет в один и тот же вопрос при
+      обработке разных чанков (перекрытие). Это позволяет дедупликации
+      находить перефразированные дубликаты на стыках чанков.
+    """
+    if s is None:
+        return ""
+    s = str(s).lower().replace("ё", "е").replace("Ё", "Е")
+    # Убираем все символы, кроме букв, цифр и пробелов
+    s = re.sub(r"[^\w\s]", " ", s)
+    # Убираем слова-заглушки (местоимения-указатели), которые LLM
+    # подставляет по-разному в разных чанках
+    placeholder_words = {
+        "этот", "этого", "этому", "этим", "этом", "эти", "этих", "этим",
+        "эта", "этой", "эту", "это", "этими",
+        "он", "она", "они", "оно", "его", "её", "ее", "их", "ему", "ей",
+        "им", "ними", "него", "нее", "неё", "них",
+        "та", "тот", "того", "тому", "тем", "том", "те", "тех", "теми",
+        "такой", "такого", "такому", "таким", "таком", "такая", "такую",
+        "такие", "таких", "такими",
+    }
+    words = s.split()
+    s = " ".join(w for w in words if w not in placeholder_words)
+    return s
 
 
-def deduplicate_questions(questions: list) -> list:
-    """Удаляет дубликаты вопросов, сохраняя порядок."""
-    seen = set()
+def _normalize_theme(theme) -> str:
+    """Нормализует название темы для группировки."""
+    return _normalize_text(theme)
+
+
+def _fuzzy_ratio(a: str, b: str) -> float:
+    """Степень схожести двух строк (0..100).
+
+    Использует rapidfuzz.fuzz.token_sort_ratio, если доступен.
+    Fallback на difflib.SequenceMatcher.
+    """
+    if not a and not b:
+        return 100.0
+    if not a or not b:
+        return 0.0
+    try:
+        from rapidfuzz import fuzz
+        return float(fuzz.token_sort_ratio(a, b))
+    except ImportError:
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, a, b).ratio() * 100.0
+
+
+def deduplicate_questions(questions: list, threshold: float = 90.0,
+                          verbose: bool = False) -> list:
+    """Удаляет дубликаты вопросов, сохраняя порядок.
+
+    Алгоритм:
+    1. Группируем вопросы по (нормализованная_тема, price).
+    2. Внутри каждой группы сравниваем нормализованный текст вопроса
+       нечётким сравнением (token_sort_ratio).
+    3. Если схожесть >= threshold — считаем дубликатом.
+    4. ДОПОЛНИТЕЛЬНО: вопросы с одинаковой ценой сравниваются глобально
+       (без учёта темы). Это ловит дубликаты на стыках чанков, когда LLM
+       не распознала тему (theme=null) и вопрос не попал в свою группу.
+
+    Это устойчиво к:
+    - разному регистру ("Смех" vs "смех")
+    - замене ё/е
+    - лишним пробелам и знакам препинания
+    - перестановке слов в вопросе
+    - мелким отличиям в формулировке
+
+    threshold=95 — почти точное совпадение (рекомендуется 90-98).
+    """
+    if not questions:
+        return questions
+
+    # groups[key] = [(normalized_question_text, original_question), ...]
+    groups: dict = {}
+    # price_groups[price] = [(normalized_question_text, original_question), ...]
+    # Глобальное сравнение по цене — для вопросов с нераспознанной темой.
+    price_groups: dict = {}
     result = []
+    duplicates_count = 0
+
     for q in questions:
-        sig = question_signature(q)
-        if sig not in seen:
-            seen.add(sig)
+        theme_key = _normalize_theme(q.get("theme"))
+        price = q.get("price")
+        key = (theme_key, price)
+        text = _normalize_text(q.get("question"))
+
+        bucket = groups.setdefault(key, [])
+
+        is_duplicate = False
+        for existing_text, existing_q in bucket:
+            score = _fuzzy_ratio(text, existing_text)
+            if score >= threshold:
+                is_duplicate = True
+                duplicates_count += 1
+                if verbose:
+                    print(
+                        f"          [dedup] Дубликат (score={score:.1f}): "
+                        f"theme={q.get('theme')!r}, price={price}\n"
+                        f"            существующий: {existing_q.get('question', '')[:80]!r}\n"
+                        f"            новый:        {q.get('question', '')[:80]!r}"
+                    )
+                break
+
+        # Если в своей группе не нашли — ищем глобально по цене.
+        # Это покрывает случай, когда у дубликата theme=null (LLM не
+        # распознала тему на стыке чанков), а у оригинала тема есть.
+        if not is_duplicate and price is not None:
+            price_bucket = price_groups.setdefault(price, [])
+            for existing_text, existing_q in price_bucket:
+                score = _fuzzy_ratio(text, existing_text)
+                if score >= threshold:
+                    is_duplicate = True
+                    duplicates_count += 1
+                    if verbose:
+                        print(
+                            f"          [dedup] Дубликат по цене (score={score:.1f}): "
+                            f"theme={q.get('theme')!r}, price={price}\n"
+                            f"            существующий: {existing_q.get('theme')!r} "
+                            f"{existing_q.get('question', '')[:80]!r}\n"
+                            f"            новый:        {q.get('question', '')[:80]!r}"
+                        )
+                    break
+
+        if not is_duplicate:
+            bucket.append((text, q))
+            if price is not None:
+                price_groups.setdefault(price, []).append((text, q))
             result.append(q)
+
+    if verbose and duplicates_count > 0:
+        print(f"          [dedup] Удалено дубликатов: {duplicates_count}")
+
     return result
 
 
@@ -416,15 +760,140 @@ def process_chunk_with_cache(chunk_text: str, chunk_idx: int, model: str,
             q["_from_cache"] = True
         return cached
 
+    # В кеше нет вопросов, но может быть raw_response от предыдущей неудачной попытки
+    cache_entry = load_cache_entry(CACHE_DIR, cache_key)
+    if cache_entry and cache_entry.get("raw_response"):
+        raw = cache_entry["raw_response"]
+        prev_error = cache_entry.get("parse_error", "")
+        print(f"          [cache] Чанк {chunk_idx}: найден raw_response в кеше "
+              f"(предыдущая ошибка: {prev_error[:80] if prev_error else 'нет'!r})")
+        print(f"          [reparse] Пробую перепарсить без запроса к LLM...")
+        # Парсим (логика ниже)
+        return _parse_and_cache(
+            raw=raw,
+            cache_key=cache_key,
+            text_hash=text_hash,
+            prompt_hash=prompt_hash,
+            model=model,
+            source_label=source_label,
+            source_file=source_file,
+            chunk_idx=chunk_idx,
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+        )
+
     # Кеша нет — отправляем в LLM
     print(f"          [api]   Чанк {chunk_idx}: отправляю в LLM...")
     raw = call_llm(SYSTEM_PROMPT, chunk_text, model)
-    parsed = extract_json(raw)
-    if isinstance(parsed, dict):
-        parsed = [parsed]
+    return _parse_and_cache(
+        raw=raw,
+        cache_key=cache_key,
+        text_hash=text_hash,
+        prompt_hash=prompt_hash,
+        model=model,
+        source_label=source_label,
+        source_file=source_file,
+        chunk_idx=chunk_idx,
+        chunk_start=chunk_start,
+        chunk_end=chunk_end,
+    )
+
+
+def _parse_and_cache(raw: str, cache_key: str, text_hash: str,
+                     prompt_hash: str, model: str, source_label: str,
+                     source_file: str, chunk_idx: int,
+                     chunk_start: int, chunk_end: int) -> list:
+    """Парсит сырой ответ LLM, нормализует и сохраняет в кэш.
+
+    Вынесено в отдельную функцию для переиспользования:
+    - при первом получении ответа от LLM
+    - при перепарсинге из кэша (raw_response без questions)
+    """
+    # СРАЗУ сохраняем сырой ответ в кэш, чтобы не потерять его при ошибке парсинга
+    save_to_cache(
+        CACHE_DIR, cache_key, text_hash, prompt_hash, model,
+        questions=[],
+        source_file=source_file,
+        chunk_index=chunk_idx,
+        chunk_start=chunk_start,
+        chunk_end=chunk_end,
+        raw_response=raw,
+        parse_error="in_progress",
+    )
+
+    # Парсим ответ
+    try:
+        parsed = extract_json(raw)
+    except Exception as e:
+        save_to_cache(
+            CACHE_DIR, cache_key, text_hash, prompt_hash, model,
+            questions=[],
+            source_file=source_file,
+            chunk_index=chunk_idx,
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+            raw_response=raw,
+            parse_error=str(e),
+        )
+        raise
+
+    # Нормализуем результат к списку словарей
+    if isinstance(parsed, list):
+        pass
+    elif isinstance(parsed, dict):
+        found_list = None
+        for key in ("questions", "data", "items", "results"):
+            if key in parsed and isinstance(parsed[key], list):
+                found_list = parsed[key]
+                break
+        if found_list is None:
+            for v in parsed.values():
+                if isinstance(v, list):
+                    found_list = v
+                    break
+        if found_list is not None:
+            parsed = found_list
+        else:
+            parsed = [parsed]
+    else:
+        err_msg = (
+            f"Неожиданный тип результата от LLM: {type(parsed).__name__}. "
+            f"Значение: {str(parsed)[:200]!r}"
+        )
+        save_to_cache(
+            CACHE_DIR, cache_key, text_hash, prompt_hash, model,
+            questions=[],
+            source_file=source_file,
+            chunk_index=chunk_idx,
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+            raw_response=raw,
+            parse_error=err_msg,
+        )
+        raise ValueError(err_msg)
+
+    # Дополнительная проверка: все элементы должны быть словарями
+    if not all(isinstance(q, dict) for q in parsed):
+        bad = [i for i, q in enumerate(parsed) if not isinstance(q, dict)]
+        err_msg = (
+            f"Некоторые элементы результата не являются словарями. "
+            f"Индексы: {bad[:10]}. Типы: {[type(parsed[i]).__name__ for i in bad[:5]]}"
+        )
+        save_to_cache(
+            CACHE_DIR, cache_key, text_hash, prompt_hash, model,
+            questions=[],
+            source_file=source_file,
+            chunk_index=chunk_idx,
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+            raw_response=raw,
+            parse_error=err_msg,
+        )
+        raise ValueError(err_msg)
+
     print(f"          Получено вопросов: {len(parsed)}")
 
-    # Сохраняем в кеш (без служебных полей)
+    # Сохраняем в кэш финальный результат
     questions_for_cache = []
     for q in parsed:
         q_clean = {k: v for k, v in q.items() if not k.startswith("_")}
@@ -436,6 +905,8 @@ def process_chunk_with_cache(chunk_text: str, chunk_idx: int, model: str,
         chunk_index=chunk_idx,
         chunk_start=chunk_start,
         chunk_end=chunk_end,
+        raw_response=raw,
+        parse_error=None,
     )
 
     # Возвращаем с метаданными
@@ -543,6 +1014,10 @@ def renumber_themes_by_price(questions: list) -> list:
 
     К названию темы добавляется префикс: "1. Яблоки", "2. Пока секрет" и т.д.
     Это решает проблему неуникальных названий (несколько "Пока секрет" в пакете).
+
+    Вопросы с нераспознанной темой (theme=null/пусто) НЕ создают новую тему:
+    им наследуется название текущей темы. Это чинит ситуацию, когда LLM не
+    распознала тему на стыке чанков и вернула theme=null для части вопросов.
     """
     if not questions:
         return questions
@@ -557,23 +1032,34 @@ def renumber_themes_by_price(questions: list) -> list:
     for sf, qs in by_source.items():
         theme_counter = 0
         prev_price = None
+        current_theme = None  # название текущей темы (без номера)
         for q in qs:
             price = q.get("price")
+            theme = q.get("theme")
+
             # Новая тема начинается, если:
             # - это первый вопрос
             # - текущий price=10, а предыдущий был 50
-            # - текущий price=None (нет цены)
+            # - текущий price=None (нет цены) И у вопроса есть своя тема
+            # - цена упала (50→20 и т.п.) И у вопроса есть своя тема
+            # Вопрос без темы НИКОГДА не начинает новую тему — он наследует
+            # текущую (иначе на стыке чанков создаётся фантомная тема).
+            has_own_theme = theme is not None and str(theme).strip() != ""
             is_new_theme = (
                 prev_price is None
                 or price == 10
-                or price is None
-                or (prev_price is not None and prev_price >= 50 and price < prev_price)
+                or (price is None and has_own_theme)
+                or (
+                    has_own_theme
+                    and prev_price is not None
+                    and prev_price >= 50
+                    and price < prev_price
+                )
             )
             if is_new_theme:
                 theme_counter += 1
 
-            theme = q.get("theme")
-            if theme is not None and theme != "":
+            if has_own_theme:
                 # Проверяем, не начинается ли тема уже с номера ("1. Смех.")
                 if re.match(r"^\d+\.\s+", theme):
                     # Тема уже пронумерована — не добавляем номер
@@ -581,11 +1067,93 @@ def renumber_themes_by_price(questions: list) -> list:
                 else:
                     # Добавляем порядковый номер к названию темы
                     q["theme"] = f"{theme_counter}. {theme}"
+                # В current_theme храним ЧИСТОЕ название (без номера),
+                # чтобы наследование не давало "85. 86. Дома".
+                current_theme = re.sub(r"^\d+\.\s+", "", theme)
+            else:
+                # Вопрос без темы — наследуем название текущей темы,
+                # чтобы не создавать фантомную тему и не ломать нумерацию.
+                if current_theme is not None:
+                    q["theme"] = f"{theme_counter}. {current_theme}"
 
             prev_price = price
             result.append(q)
 
     return result
+
+
+def validate_questions(questions: list, package_name: str) -> None:
+    """Пост-проверка результата парсинга.
+
+    Проверяет:
+    - нет ли вопросов с пустой/неопределённой темой (theme=null)
+    - нет ли тем с количеством вопросов, не кратным 5
+    - нет ли тем с нестандартным набором цен
+
+    Проблемы выводятся в консоль, но не прерывают обработку.
+    """
+    if not questions:
+        print(f"[!] Валидация {package_name}: пустой список вопросов")
+        return
+
+    problems = []
+
+    # 1. Вопросы без темы
+    no_theme = [q for q in questions if not (q.get("theme") or "").strip()]
+    if no_theme:
+        problems.append(
+            f"вопросов без темы: {len(no_theme)} "
+            f"(пример: {no_theme[0].get('question', '')[:60]!r})"
+        )
+
+    # 2. Темы с количеством вопросов, не кратным 5
+    themes = OrderedDict()
+    for q in questions:
+        themes.setdefault(q.get("theme") or "(NULL)", []).append(q)
+    bad_counts = {t: len(qs) for t, qs in themes.items() if len(qs) % 5 != 0}
+    if bad_counts:
+        problems.append(
+            "тем с числом вопросов, не кратным 5: "
+            + ", ".join(f"{t!r} ({n})" for t, n in list(bad_counts.items())[:5])
+        )
+
+    # 3. Темы с нестандартным набором цен
+    bad_prices = []
+    for t, qs in themes.items():
+        prices = sorted(q.get("price") for q in qs)
+        if prices != [10, 20, 30, 40, 50]:
+            bad_prices.append(f"{t!r} ({prices})")
+    if bad_prices:
+        problems.append(
+            "тем с нестандартными ценами: " + ", ".join(bad_prices[:5])
+        )
+
+    # 4. Вопросы, где форма удалена из текста (осталась "дыра")
+    #    Например: "мороженое в ." вместо "мороженое в ЭТОТ ДЕНЬ НЕДЕЛИ"
+    import re as _re
+    hole_qs = []
+    for q in questions:
+        question = q.get("question") or ""
+        form = q.get("form")
+        if form and str(form).strip():
+            form_lower = str(form).strip().lower()
+            if form_lower not in question.lower():
+                # Форма не найдена в вопросе — проверяем, есть ли "дыра"
+                if _re.search(r"\s+\.\s", question) or _re.search(r"\s{2,}\.", question):
+                    hole_qs.append(q.get("question", "")[:60])
+    if hole_qs:
+        problems.append(
+            f"вопросов с удалённой формой (дыра в тексте): {len(hole_qs)} "
+            f"(пример: {hole_qs[0]!r})"
+        )
+
+    if problems:
+        print(f"[!] Валидация {package_name}: найдены проблемы:")
+        for p in problems:
+            print(f"    - {p}")
+    else:
+        print(f"[*] Валидация {package_name}: OK "
+              f"({len(questions)} вопросов, {len(themes)} тем)")
 
 
 def process_package(pkg: dict, model: str) -> list:
@@ -609,9 +1177,13 @@ def process_package(pkg: dict, model: str) -> list:
 
     questions = process_input_files(input_files, model, name, prompt_hash)
 
+
     # Пост-обработка: нумерация тем по границам (50→10)
     print(f"\n[*] Пост-обработка: нумерация тем...")
     questions = renumber_themes_by_price(questions)
+
+    # Пост-проверка: валидация результата
+    validate_questions(questions, name)
 
     # Сохраняем промежуточный JSON
     json_path = f"{name}_questions.json"
